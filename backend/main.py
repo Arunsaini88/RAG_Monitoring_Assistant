@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from embeddings_engine import EmbeddingEngine
 from llm_handler import query_llm
 from prompt_templates import build_prompt
+from query_router import QueryRouter, get_aggregate_data, format_aggregate_response
 from config import HOST, PORT, TOP_K, DATA_PATH, EMBEDDING_MODEL, OLLAMA_HOST, OLLAMA_PORT
 # from ollama_keepalive import keep_alive  # Disabled - caused race conditions
 
@@ -31,6 +32,9 @@ app.add_middleware(
 
 # Initialize embedding engine (auto-refresh thread starts inside)
 engine = EmbeddingEngine()
+
+# Initialize query router
+query_router = QueryRouter()
 
 # Conversation history storage (session_id -> list of {role, content, timestamp})
 conversation_history = defaultdict(list)
@@ -113,28 +117,64 @@ def query_endpoint(body: Dict = Body(...)):
     if not question or not question.strip():
         return {"error": "please send {'query': '<your question>'}"}
 
-    # Get conversation history for context
-    conversation_context = get_conversation_context(session_id)
+    # Classify query intent
+    query_type, subject = query_router.classify_query(question)
 
-    # Retrieve top-k relevant records
-    context_records = engine.query(question, k=TOP_K)
+    # Handle aggregate queries (lists, counts, etc.) directly from data
+    if query_type == "aggregate":
+        # Ensure data is loaded (lazy initialization)
+        if not engine._initialized or len(engine.metadata) == 0:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info("Lazy loading: Building index for aggregate query...")
+            try:
+                count = engine.refresh_from_source()
+                if count > 0:
+                    engine._initialized = True
+                    logger.info(f"Index built with {count} records")
+            except Exception as e:
+                logger.error(f"Failed to build index: {e}")
 
-    # Build prompt with conversation history
-    prompt = build_prompt(question, context_records, conversation_context)
+        aggregate_data = get_aggregate_data(engine.metadata, subject)
+        answer = format_aggregate_response(aggregate_data, question)
 
-    # Get LLM response
-    llm_response = query_llm(prompt)
+        # Store in conversation history
+        add_to_history(session_id, "user", question)
+        add_to_history(session_id, "assistant", answer)
 
-    # Store this exchange in conversation history
-    add_to_history(session_id, "user", question)
-    add_to_history(session_id, "assistant", llm_response)
+        return {
+            "answer": answer,
+            "query_type": "aggregate",
+            "subject": subject,
+            "context_count": len(engine.metadata),
+            "conversation_length": len(conversation_history[session_id])
+        }
 
-    return {
-        "answer": llm_response,
-        "context_count": len(context_records),
-        "top_context": context_records,
-        "conversation_length": len(conversation_history[session_id])
-    }
+    # Handle semantic queries with RAG (original behavior)
+    else:
+        # Get conversation history for context
+        conversation_context = get_conversation_context(session_id)
+
+        # Retrieve top-k relevant records
+        context_records = engine.query(question, k=TOP_K)
+
+        # Build prompt with conversation history
+        prompt = build_prompt(question, context_records, conversation_context)
+
+        # Get LLM response
+        llm_response = query_llm(prompt)
+
+        # Store this exchange in conversation history
+        add_to_history(session_id, "user", question)
+        add_to_history(session_id, "assistant", llm_response)
+
+        return {
+            "answer": llm_response,
+            "query_type": "semantic",
+            "context_count": len(context_records),
+            "top_context": context_records,
+            "conversation_length": len(conversation_history[session_id])
+        }
 
 @app.post("/clear_history")
 def clear_history(body: Dict = Body(...)):

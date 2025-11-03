@@ -15,8 +15,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from embeddings_engine import EmbeddingEngine
 from llm_handler import query_llm
 from prompt_templates import build_prompt
-from query_router import QueryRouter, get_aggregate_data, format_aggregate_response
-from config import HOST, PORT, TOP_K, DATA_PATH, EMBEDDING_MODEL, OLLAMA_HOST, OLLAMA_PORT
+from query_router import QueryRouter, get_aggregate_data, format_aggregate_response, build_aggregate_prompt
+from config import (HOST, PORT, TOP_K, DATA_PATH, EMBEDDING_MODEL,
+                    OLLAMA_HOST, OLLAMA_PORT, USE_LLM_FOR_AGGREGATES)
 # from ollama_keepalive import keep_alive  # Disabled - caused race conditions
 
 app = FastAPI(title="Offline RAG Prototype")
@@ -136,7 +137,26 @@ def query_endpoint(body: Dict = Body(...)):
                 logger.error(f"Failed to build index: {e}")
 
         aggregate_data = get_aggregate_data(engine.metadata, subject)
-        answer = format_aggregate_response(aggregate_data, question)
+
+        # Check for errors first (before LLM processing)
+        if "error" in aggregate_data:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Aggregate query error: {aggregate_data.get('error')}")
+            answer = format_aggregate_response(aggregate_data, question)
+        elif USE_LLM_FOR_AGGREGATES:
+            # Use LLM for natural language formatting (no hardcoded responses)
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Using LLM to format aggregate response for: {subject}")
+            prompt = build_aggregate_prompt(question, aggregate_data)
+            answer = query_llm(prompt, max_tokens=150, temperature=0.3)
+        else:
+            # Direct formatting (instant, accurate, uses templates)
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Using direct formatting for aggregate response: {subject}")
+            answer = format_aggregate_response(aggregate_data, question)
 
         # Store in conversation history
         add_to_history(session_id, "user", question)
@@ -147,7 +167,8 @@ def query_endpoint(body: Dict = Body(...)):
             "query_type": "aggregate",
             "subject": subject,
             "context_count": len(engine.metadata),
-            "conversation_length": len(conversation_history[session_id])
+            "conversation_length": len(conversation_history[session_id]),
+            "used_llm": USE_LLM_FOR_AGGREGATES
         }
 
     # Handle semantic queries with RAG (original behavior)

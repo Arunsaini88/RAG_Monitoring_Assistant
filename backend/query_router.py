@@ -18,13 +18,17 @@ class QueryRouter:
 
     # Patterns that indicate aggregate/list queries
     AGGREGATE_PATTERNS = [
-        r'\b(list|show|display|enumerate)\s+(all|me|the)?\s*(software|licenses|servers|locations)',
-        r'\bhow many\s+(unique|different|distinct)?\s*(software|licenses|servers)',
-        r'\bwhat\s+(software|licenses|servers|locations)\s+(are|do)\s+(available|exist)',
-        r'\ball\s+(the\s+)?(software|licenses|servers|locations)',
-        r'\btotal\s+(number\s+of\s+)?(software|licenses|servers)',
+        r'\b(list|show|display|enumerate)\s+(all|me|the)?\s*(software|licenses|servers|locations?)',
+        r'\bhow many\s+(unique|different|distinct)?\s*(software|licenses|servers|locations?)',
+        r'\bwhat\s+(software|licenses|servers|locations?)\s+(are|do)\s+(available|exist)',
+        r'\ball\s+(the\s+)?(software|licenses|servers|locations?)',
+        r'\btotal\s+(number\s+of\s+)?(software|licenses|servers|locations?)',
         r'\bcomplete\s+list',
-        r'\bunique\s+(software|licenses|servers)',
+        r'\bunique\s+(software|licenses|servers|locations?)',
+        # Additional common patterns
+        r'\bget\s+(all|the|me)?\s*(software|licenses|servers|locations?)\s*(list)?',
+        r'\bgive\s+(me|all)?\s*(the)?\s*(software|licenses|servers|locations?)',
+        r'\bfetch\s+(all|the)?\s*(software|licenses|servers|locations?)',
     ]
 
     def __init__(self):
@@ -120,13 +124,14 @@ def get_aggregate_data(records: List[Dict], subject: str) -> Dict:
         }
 
 
-def format_aggregate_response(aggregate_data: Dict, query: str) -> str:
+def format_aggregate_response(aggregate_data: Dict, query: str, use_llm: bool = False) -> str:
     """
     Format aggregate data into a natural language response.
 
     Args:
         aggregate_data: Dictionary with aggregated results
         query: Original user query
+        use_llm: If True, use LLM to format the response naturally
 
     Returns:
         Formatted response string
@@ -139,6 +144,11 @@ def format_aggregate_response(aggregate_data: Dict, query: str) -> str:
 
     data_type = aggregate_data.get("type")
 
+    # If use_llm is True, return raw data structure for LLM processing
+    if use_llm:
+        return aggregate_data
+
+    # Default: Direct formatting (fast, accurate)
     if data_type == "software_list":
         items = aggregate_data["items"]
         count = aggregate_data["count"]
@@ -180,3 +190,77 @@ def format_aggregate_response(aggregate_data: Dict, query: str) -> str:
         )
 
     return "Unable to format aggregate data."
+
+
+def build_aggregate_prompt(query: str, aggregate_data: Dict) -> str:
+    """
+    Build a prompt for LLM to format aggregate data naturally.
+    The LLM will generate the response based on the provided data.
+
+    Args:
+        query: User's original question
+        aggregate_data: The aggregate data dictionary
+
+    Returns:
+        Prompt for LLM
+    """
+    data_type = aggregate_data.get("type")
+
+    if data_type == "software_list":
+        items_list = "\n".join(f"- {item}" for item in aggregate_data["items"])
+        return (
+            f"Question: {query}\n\n"
+            f"Data: {aggregate_data['count']} unique software products found:\n"
+            f"{items_list}\n\n"
+            f"Answer the question naturally and conversationally. Include all items mentioned above. "
+            f"Keep response concise (2-4 sentences)."
+        )
+
+    elif data_type == "server_list":
+        items_list = "\n".join(f"- {item}" for item in aggregate_data["items"])
+        return (
+            f"Question: {query}\n\n"
+            f"Data: {aggregate_data['count']} license servers found:\n"
+            f"{items_list}\n\n"
+            f"Answer the question naturally. Keep response brief (2-3 sentences)."
+        )
+
+    elif data_type == "location_list":
+        items_list = "\n".join(f"- {item}" for item in aggregate_data["items"])
+        return (
+            f"Question: {query}\n\n"
+            f"Data: {aggregate_data['count']} locations found:\n"
+            f"{items_list}\n\n"
+            f"Answer the question naturally. Keep response brief (2-3 sentences)."
+        )
+
+    elif data_type == "license_list":
+        # For licenses, limit to reasonable number
+        items = aggregate_data["items"][:20]
+        items_list = "\n".join(f"- {item}" for item in items)
+        total_count = aggregate_data["count"]
+        return (
+            f"Question: {query}\n\n"
+            f"Data: {total_count} total licenses found" +
+            (f" (showing first 20):\n" if total_count > 20 else ":\n") +
+            f"{items_list}\n\n"
+            f"Answer the question naturally. Keep response brief (2-3 sentences)."
+        )
+
+    elif data_type == "general_stats":
+        return (
+            f"Question: {query}\n\n"
+            f"Data statistics:\n"
+            f"- Total records: {aggregate_data['total_records']}\n"
+            f"- Unique software: {aggregate_data['unique_software']}\n"
+            f"- Unique servers: {aggregate_data['unique_servers']}\n"
+            f"- Unique locations: {aggregate_data['unique_locations']}\n\n"
+            f"Answer the question naturally based on these statistics. Keep response brief (2-3 sentences)."
+        )
+
+    # Fallback for any other type
+    return (
+        f"Question: {query}\n\n"
+        f"Data: {aggregate_data}\n\n"
+        f"Answer the question naturally based on the data provided. Keep response brief (2-3 sentences)."
+    )

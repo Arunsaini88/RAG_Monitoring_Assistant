@@ -32,3 +32,8 @@ PORT = 8000
 
 # Retriever params (reduced from 6 to 4 for faster LLM processing)
 TOP_K = 4
+
+# Aggregate query handling
+# If True, use LLM to format aggregate responses naturally (~5-10s, conversational)
+# If False, use direct formatting (instant <0.1s, accurate but less natural)
+USE_LLM_FOR_AGGREGATES = True
